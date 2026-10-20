@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Admin</title>
+<style>
+  body{font-family:Arial,sans-serif;margin:20px;background:#111;color:#eee}
+  table{width:100%;border-collapse:collapse;margin-top:12px}
+  th,td{border:1px solid #444;padding:8px;text-align:left;font-size:14px}
+  th{background:#222}
+  input,button{padding:8px;margin:4px 0;font-size:14px}
+  input{width:220px;max-width:100%}
+  button{cursor:pointer;background:#0a84ff;color:#fff;border:none;border-radius:4px}
+  button:hover{background:#0066cc}
+  #login{margin-top:40px}
+  .hidden{display:none}
+  .wrap{overflow-x:auto}
+  #msg{color:#f66;min-height:1.2em}
+  #resultado{margin-top:12px;padding:10px;border:1px solid #444;border-radius:4px;line-height:1.6}
+  a{color:#6cb6ff}
+  .sair{background:#444;float:right}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h3>Admin Login</h3>
+  <input type="password" id="senha" placeholder="Senha" autocomplete="current-password">
+  <button id="btnEntrar">Entrar</button>
+  <div id="msg"></div>
+</div>
+
+<div id="painel" class="hidden">
+  <h3>Acessos <button id="btnSair" class="sair">Sair</button></h3>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>IP</th><th>Horário</th><th>Ação</th></tr></thead>
+      <tbody id="tabela"></tbody>
+    </table>
+  </div>
+
+  <h3>Consultar Localização por IP</h3>
+  <input type="text" id="ipBusca" placeholder="Digite o IP">
+  <button id="btnBusca">Acessar Localização</button>
+  <div id="resultado" class="hidden"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let TOKEN = sessionStorage.getItem("token") || "";
+let timer = null;
+
+function mostrarPainel(sim) {
+  $("login").classList.toggle("hidden", sim);
+  $("painel").classList.toggle("hidden", !sim);
+  clearInterval(timer);
+  if (sim) { carregarAcessos(); timer = setInterval(carregarAcessos, 5000); }
+}
+
+function sair(aviso) {
+  TOKEN = "";
+  sessionStorage.removeItem("token");
+  mostrarPainel(false);
+  $("msg").textContent = aviso || "";
+}
+
+async function entrar() {
+  $("msg").textContent = "";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ senha: $("senha").value })
+    });
+    if (r.ok) {
+      TOKEN = (await r.json()).token;
+      sessionStorage.setItem("token", TOKEN);
+      $("senha").value = "";
+      mostrarPainel(true);
+    } else if (r.status === 429) {
+      $("msg").textContent = "Muitas tentativas. Aguarde 15 minutos.";
+    } else if (r.status === 500) {
+      $("msg").textContent = "Servidor sem configuração (ADMIN_SENHA / ADMIN_TOKEN).";
+    } else {
+      $("msg").textContent = "Senha incorreta";
+    }
+  } catch (e) {
+    $("msg").textContent = "Erro de conexão";
+  }
+}
+
+async function carregarAcessos() {
+  try {
+    const r = await fetch("/api/acessos", { headers: { Authorization: "Bearer " + TOKEN } });
+    if (r.status === 401) return sair("Sessão expirada. Entre novamente.");
+    if (!r.ok) return;
+    const dados = await r.json();
+    const tbody = $("tabela");
+    tbody.innerHTML = "";
+    if (!dados.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 3;
+      td.textContent = "Nenhum acesso registrado ainda.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    dados.forEach((d) => {
+      const tr = document.createElement("tr");
+      const tdIp = document.createElement("td"); tdIp.textContent = d.ip;
+      const tdH = document.createElement("td"); tdH.textContent = d.horario;
+      const tdA = document.createElement("td");
+      const btn = document.createElement("button");
+      btn.textContent = "Acessar Localização";
+      btn.onclick = () => localizar(d.ip);
+      tdA.appendChild(btn);
+      tr.append(tdIp, tdH, tdA);
+      tbody.appendChild(tr);
+    });
+  } catch (e) {}
+}
+
+async function localizar(ip) {
+  const alvo = (ip || $("ipBusca").value).trim();
+  const box = $("resultado");
+  if (!alvo) return;
+  box.classList.remove("hidden");
+  box.textContent = "Buscando...";
+  try {
+    const r = await fetch("/api/localizar?ip=" + encodeURIComponent(alvo),
+      { headers: { Authorization: "Bearer " + TOKEN } });
+    if (r.status === 401) return sair("Sessão expirada. Entre novamente.");
+    const j = await r.json();
+    box.textContent = "";
+    if (j.erro) { box.textContent = j.erro; return; }
+    const linhas = [
+      ["IP", j.ip],
+      ["Local", [j.cidade, j.regiao, j.pais].filter(Boolean).join(", ")],
+      ["Provedor", j.provedor]
+    ];
+    linhas.forEach(([k, v]) => {
+      const d = document.createElement("div");
+      d.textContent = k + ": " + (v || "—");
+      box.appendChild(d);
+    });
+    const a = document.createElement("a");
+    a.href = "https://www.google.com/maps?q=" + encodeURIComponent(j.lat + "," + j.lon);
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "Abrir no Google Maps";
+    box.appendChild(a);
+    const aviso = document.createElement("div");
+    aviso.style.cssText = "color:#888;font-size:12px;margin-top:6px";
+    aviso.textContent = "Localização aproximada (cidade/provedor), não é um endereço exato.";
+    box.appendChild(aviso);
+  } catch (e) {
+    box.textContent = "Erro ao consultar a localização.";
+  }
+}
+
+$("btnEntrar").onclick = entrar;
+$("senha").addEventListener("keydown", (e) => { if (e.key === "Enter") entrar(); });
+$("btnSair").onclick = () => sair("");
+$("btnBusca").onclick = () => localizar();
+$("ipBusca").addEventListener("keydown", (e) => { if (e.key === "Enter") localizar(); });
+
+if (TOKEN) mostrarPainel(true);
+</script>
+</body>
+</html>
